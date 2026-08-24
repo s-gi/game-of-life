@@ -1,0 +1,486 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Game of Life — TUI port</title>
+<meta name="description" content="Conway's Game of Life, ported from a Python curses TUI to the browser.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#07090a;
+    --phosphor:#ffb000;
+    --phosphor-bright:#ffd166;
+    --phosphor-dim:#5c3f00;
+    --text-dim:#8a7a5c;
+    --glow: rgba(255,176,0,.35);
+    --cell-px: 10;
+  }
+
+  *{ box-sizing:border-box; }
+
+  html,body{
+    margin:0; padding:0; height:100%;
+    background:var(--bg);
+    color:var(--phosphor);
+    font-family:'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace;
+    overflow:hidden;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  /* ---------- outer frame ---------- */
+  .frame{
+    position:fixed; inset:0;
+    display:flex; flex-direction:column;
+    border-left:1px solid var(--phosphor-dim);
+    border-right:1px solid var(--phosphor-dim);
+  }
+
+  .border-line{
+    flex:0 0 auto;
+    white-space:pre;
+    font-size:13px;
+    line-height:1.4;
+    letter-spacing:0;
+    color:var(--phosphor-dim);
+    padding:0 2px;
+    user-select:none;
+    overflow:hidden;
+  }
+  .border-line .title{ color:var(--phosphor-bright); }
+
+  /* ---------- grid canvas ---------- */
+  .stage{
+    position:relative;
+    flex:1 1 auto;
+    min-height:0;
+  }
+  canvas{
+    position:absolute; inset:0;
+    display:block;
+    width:100%; height:100%;
+    cursor:crosshair;
+  }
+
+  /* CRT atmosphere */
+  .crt-overlay{
+    position:absolute; inset:0;
+    pointer-events:none;
+    background:
+      repeating-linear-gradient(
+        to bottom,
+        rgba(0,0,0,0) 0px,
+        rgba(0,0,0,0) 2px,
+        rgba(0,0,0,.18) 3px
+      );
+    mix-blend-mode:multiply;
+  }
+  .crt-vignette{
+    position:absolute; inset:0;
+    pointer-events:none;
+    background:radial-gradient(ellipse at center, rgba(0,0,0,0) 55%, rgba(0,0,0,.55) 100%);
+  }
+  .crt-flicker{
+    position:absolute; inset:0;
+    pointer-events:none;
+    background:var(--glow);
+    opacity:0;
+    animation:flicker 6.5s infinite;
+  }
+  @keyframes flicker{
+    0%,96%,100%{ opacity:0; }
+    97%{ opacity:.03; }
+    98%{ opacity:0; }
+    99%{ opacity:.05; }
+  }
+  @media (prefers-reduced-motion: reduce){
+    .crt-flicker{ animation:none; }
+  }
+
+  /* ---------- status bar (mirrors curses draw()) ---------- */
+  .statusbar{
+    flex:0 0 auto;
+    padding:6px 10px 8px;
+    display:flex; flex-direction:column; gap:2px;
+    border-top:1px solid var(--phosphor-dim);
+  }
+  .status-row1{
+    display:flex; justify-content:space-between; align-items:baseline;
+    color:#3fae4a; /* matches original's green title/credits pair */
+    font-size:13px;
+  }
+  .status-row1 .title{ font-weight:700; letter-spacing:.06em; }
+  .status-row1 .cursor{ animation:blink 1s steps(1) infinite; }
+  @keyframes blink{ 50%{ opacity:0; } }
+  @media (prefers-reduced-motion: reduce){ .status-row1 .cursor{ animation:none; } }
+
+  .status-row2{
+    color:var(--phosphor-bright);
+    font-size:12px;
+    white-space:nowrap;
+    overflow-x:auto;
+    scrollbar-width:none;
+  }
+  .status-row2::-webkit-scrollbar{ display:none; }
+  .status-row2 kbd{
+    background:transparent;
+    border:1px solid var(--phosphor-dim);
+    border-radius:3px;
+    padding:0 4px;
+    color:var(--phosphor);
+    font-family:inherit;
+    font-size:11px;
+  }
+
+  /* ---------- touch controls ---------- */
+  .controls{
+    display:flex; gap:6px; flex-wrap:wrap;
+    margin-top:6px;
+  }
+  .controls button{
+    font-family:inherit;
+    font-size:11px;
+    background:transparent;
+    color:var(--phosphor);
+    border:1px solid var(--phosphor-dim);
+    border-radius:3px;
+    padding:5px 9px;
+    cursor:pointer;
+    transition:background .12s ease, color .12s ease;
+  }
+  .controls button:hover,
+  .controls button:focus-visible{
+    background:var(--phosphor-dim);
+    color:var(--phosphor-bright);
+    outline:none;
+  }
+  .controls button:active{
+    background:var(--phosphor);
+    color:#07090a;
+  }
+  .controls button[aria-pressed="true"]{
+    background:var(--phosphor);
+    color:#07090a;
+  }
+
+  @media (max-width:560px){
+    .border-line{ font-size:10px; }
+    .status-row1{ font-size:11px; }
+    .status-row2{ display:none; } /* buttons carry the load on small screens */
+    .controls button{ font-size:12px; padding:7px 10px; }
+  }
+</style>
+</head>
+<body>
+
+  <div class="frame">
+    <div class="border-line" id="borderTop" aria-hidden="true"></div>
+
+    <div class="stage">
+      <canvas id="grid"></canvas>
+      <div class="crt-overlay" aria-hidden="true"></div>
+      <div class="crt-vignette" aria-hidden="true"></div>
+      <div class="crt-flicker" aria-hidden="true"></div>
+    </div>
+
+    <div class="border-line" id="borderMid" aria-hidden="true"></div>
+
+    <div class="statusbar">
+      <div class="status-row1">
+        <span class="title">Game Of Life<span class="cursor">▌</span></span>
+        <span class="credits">ported from Python · curses → canvas</span>
+      </div>
+      <div class="status-row2" id="statusRow2">
+        Exit: — · Seed: <kbd>R</kbd> · Clear: <kbd>C</kbd> · Fast: <kbd>F</kbd> · Slow: <kbd>S</kbd> · Pause: <kbd>Space</kbd> · Draw: click/drag while paused
+      </div>
+      <div class="controls" role="group" aria-label="Simulation controls">
+        <button type="button" id="btnPause" aria-pressed="false">Pause</button>
+        <button type="button" id="btnSeed">Reseed</button>
+        <button type="button" id="btnClear">Clear</button>
+        <button type="button" id="btnSlower">Slower</button>
+        <button type="button" id="btnFaster">Faster</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  "use strict";
+
+  /* =======================================================================
+     GameEngine — pure state & rules, no DOM knowledge (mirrors GameEngine
+     from the original Python: initialize_grid / seed_grid / step).
+     ======================================================================= */
+  class GameEngine {
+    constructor(rows, cols) {
+      this.rows = rows;
+      this.cols = cols;
+      this.grid = new Uint8Array(rows * cols);
+      this.generations = 0;
+    }
+
+    idx(r, c) { return r * this.cols + c; }
+
+    seedGrid(density = 0.25) {
+      for (let i = 0; i < this.grid.length; i++) {
+        this.grid[i] = Math.random() < density ? 1 : 0;
+      }
+      this.generations = 0;
+    }
+
+    clearGrid() {
+      this.grid.fill(0);
+      this.generations = 0;
+    }
+
+    setCell(r, c, alive) {
+      if (r < 0 || r >= this.rows || c < 0 || c >= this.cols) return;
+      this.grid[this.idx(r, c)] = alive ? 1 : 0;
+    }
+
+    countNeighbors(r, c) {
+      let count = 0;
+      for (let dr = -1; dr <= 1; dr++) {
+        for (let dc = -1; dc <= 1; dc++) {
+          if (dr === 0 && dc === 0) continue;
+          const nr = r + dr, nc = c + dc;
+          if (nr >= 0 && nr < this.rows && nc >= 0 && nc < this.cols) {
+            count += this.grid[this.idx(nr, nc)];
+          }
+        }
+      }
+      return count;
+    }
+
+    step() {
+      const next = new Uint8Array(this.grid.length);
+      let alive = 0;
+      for (let r = 0; r < this.rows; r++) {
+        for (let c = 0; c < this.cols; c++) {
+          const n = this.countNeighbors(r, c);
+          const isAlive = this.grid[this.idx(r, c)] === 1;
+          const survives = isAlive && (n === 2 || n === 3);
+          const born = !isAlive && n === 3;
+          if (survives || born) {
+            next[this.idx(r, c)] = 1;
+            alive++;
+          }
+        }
+      }
+      this.grid = next;
+      this.generations++;
+      return alive;
+    }
+  }
+
+  /* =======================================================================
+     TerminalRenderer — draws the engine's grid onto a canvas as glowing
+     phosphor cells, plus builds the box-drawing border lines.
+     ======================================================================= */
+  class TerminalRenderer {
+    constructor(canvas) {
+      this.canvas = canvas;
+      this.ctx = canvas.getContext("2d");
+      this.cellPx = 10;
+      this.dpr = Math.max(1, window.devicePixelRatio || 1);
+    }
+
+    fitToContainer(rows, cols) {
+      const rect = this.canvas.parentElement.getBoundingClientRect();
+      this.canvas.width = Math.round(rect.width * this.dpr);
+      this.canvas.height = Math.round(rect.height * this.dpr);
+      this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    }
+
+    draw(engine) {
+      const { ctx, cellPx } = this;
+      const w = this.canvas.width / this.dpr;
+      const h = this.canvas.height / this.dpr;
+      ctx.clearRect(0, 0, w, h);
+
+      ctx.fillStyle = "#ffb000";
+      ctx.shadowColor = "rgba(255,176,0,.85)";
+      ctx.shadowBlur = 5;
+
+      for (let r = 0; r < engine.rows; r++) {
+        const rowBase = r * engine.cols;
+        for (let c = 0; c < engine.cols; c++) {
+          if (engine.grid[rowBase + c]) {
+            ctx.fillRect(c * cellPx + 1, r * cellPx + 1, cellPx - 2, cellPx - 2);
+          }
+        }
+      }
+      ctx.shadowBlur = 0;
+    }
+  }
+
+  function buildBorderLine(pixelWidth, charWidthPx, opts) {
+    const cols = Math.max(4, Math.floor(pixelWidth / charWidthPx));
+    if (!opts || !opts.label) {
+      return "─".repeat(cols);
+    }
+    const label = ` ${opts.label} `;
+    const remaining = Math.max(0, cols - label.length - 2);
+    const left = Math.floor(remaining / 2);
+    const right = remaining - left;
+    return "─".repeat(left) + "┤" + label + "├" + "─".repeat(right);
+  }
+
+  /* =======================================================================
+     App — wiring: owns the timing loop, input, and resize handling
+     (mirrors GameOfLifeUI: run_loop / handle_resize / key bindings).
+     ======================================================================= */
+  class App {
+    constructor() {
+      this.canvas = document.getElementById("grid");
+      this.borderTop = document.getElementById("borderTop");
+      this.borderMid = document.getElementById("borderMid");
+      this.renderer = new TerminalRenderer(this.canvas);
+
+      this.speedMs = 200;   // matches original default self.speed = 0.2s
+      this.paused = false;
+      this.lastTick = 0;
+      this.pointerDown = false;
+
+      this.buildEngine();
+      this.bindKeys();
+      this.bindButtons();
+      this.bindPointer();
+      window.addEventListener("resize", () => this.handleResize());
+
+      requestAnimationFrame((t) => this.loop(t));
+    }
+
+    cellSizeForViewport() {
+      return window.innerWidth < 560 ? 8 : 10;
+    }
+
+    buildEngine() {
+      this.renderer.cellPx = this.cellSizeForViewport();
+      this.renderer.fitToContainer();
+      const rect = this.canvas.getBoundingClientRect();
+      const cols = Math.max(4, Math.floor(rect.width / this.renderer.cellPx));
+      const rows = Math.max(4, Math.floor(rect.height / this.renderer.cellPx));
+      this.engine = new GameEngine(rows, cols);
+      this.engine.seedGrid();
+      this.renderer.fitToContainer(rows, cols);
+      this.redrawBorders();
+    }
+
+    handleResize() {
+      const cellPx = this.cellSizeForViewport();
+      const rect = this.canvas.getBoundingClientRect();
+      const cols = Math.max(4, Math.floor(rect.width / cellPx));
+      const rows = Math.max(4, Math.floor(rect.height / cellPx));
+      if (rows !== this.engine.rows || cols !== this.engine.cols || cellPx !== this.renderer.cellPx) {
+        this.renderer.cellPx = cellPx;
+        this.engine = new GameEngine(rows, cols);
+        this.engine.seedGrid();
+        this.renderer.fitToContainer(rows, cols);
+      }
+      this.redrawBorders();
+    }
+
+    redrawBorders() {
+      const charW = 7.8; // approx JetBrains Mono advance at 13px
+      const width = this.borderTop.getBoundingClientRect().width;
+      this.borderTop.textContent = "┌" + buildBorderLine(width - 8, charW, { label: "GAME OF LIFE" });
+      this.borderMid.textContent = "└" + buildBorderLine(width - 8, charW) + "┘";
+    }
+
+    aliveCount() {
+      let n = 0;
+      for (let i = 0; i < this.engine.grid.length; i++) n += this.engine.grid[i];
+      return n;
+    }
+
+    loop(timestamp) {
+      if (!this.paused && timestamp - this.lastTick >= this.speedMs) {
+        this.lastTick = timestamp;
+        this.currentAlive = this.engine.step();
+      }
+      if (this.currentAlive === undefined) this.currentAlive = this.aliveCount();
+      this.renderer.draw(this.engine);
+      this.updateStatus();
+      requestAnimationFrame((t) => this.loop(t));
+    }
+
+    updateStatus() {
+      const el = document.getElementById("statusRow2");
+      el.innerHTML =
+        `Gen: ${this.engine.generations} · Alive: ${this.currentAlive ?? 0} · ` +
+        `Speed: ${this.speedMs}ms · Seed: <kbd>R</kbd> · Clear: <kbd>C</kbd> · ` +
+        `Fast: <kbd>F</kbd> · Slow: <kbd>S</kbd> · Pause: <kbd>Space</kbd> · ` +
+        `Draw: click/drag while paused`;
+    }
+
+    setPaused(paused) {
+      this.paused = paused;
+      document.getElementById("btnPause").textContent = paused ? "Resume" : "Pause";
+      document.getElementById("btnPause").setAttribute("aria-pressed", String(paused));
+      this.canvas.style.cursor = paused ? "crosshair" : "default";
+    }
+
+    bindKeys() {
+      window.addEventListener("keydown", (e) => {
+        switch (e.key.toLowerCase()) {
+          case "r":
+            this.engine.seedGrid();
+            break;
+          case "c":
+            this.engine.clearGrid();
+            this.currentAlive = 0;
+            break;
+          case "f":
+            this.speedMs = 100;
+            break;
+          case "s":
+            this.speedMs = 1000;
+            break;
+          case " ":
+            e.preventDefault();
+            this.setPaused(!this.paused);
+            break;
+        }
+      });
+    }
+
+    bindButtons() {
+      document.getElementById("btnPause").addEventListener("click", () => this.setPaused(!this.paused));
+      document.getElementById("btnSeed").addEventListener("click", () => this.engine.seedGrid());
+      document.getElementById("btnClear").addEventListener("click", () => {
+        this.engine.clearGrid();
+        this.currentAlive = 0;
+      });
+      document.getElementById("btnSlower").addEventListener("click", () => { this.speedMs = 1000; });
+      document.getElementById("btnFaster").addEventListener("click", () => { this.speedMs = 100; });
+    }
+
+    paintAt(clientX, clientY) {
+      if (!this.paused) return;
+      const rect = this.canvas.getBoundingClientRect();
+      const c = Math.floor((clientX - rect.left) / this.renderer.cellPx);
+      const r = Math.floor((clientY - rect.top) / this.renderer.cellPx);
+      this.engine.setCell(r, c, true);
+      this.currentAlive = this.aliveCount();
+    }
+
+    bindPointer() {
+      this.canvas.addEventListener("pointerdown", (e) => {
+        this.pointerDown = true;
+        this.paintAt(e.clientX, e.clientY);
+      });
+      window.addEventListener("pointerup", () => { this.pointerDown = false; });
+      this.canvas.addEventListener("pointermove", (e) => {
+        if (this.pointerDown) this.paintAt(e.clientX, e.clientY);
+      });
+    }
+  }
+
+  window.addEventListener("DOMContentLoaded", () => new App());
+})();
+</script>
+</body>
+</html>
