@@ -136,7 +136,9 @@
 
   /* ---------- touch controls ---------- */
   .controls{
-    display:flex; gap:6px; flex-wrap:wrap;
+    display:grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap:6px;
     margin-top:6px;
   }
   .controls button{
@@ -146,9 +148,13 @@
     color:var(--phosphor);
     border:1px solid var(--phosphor-dim);
     border-radius:3px;
-    padding:5px 9px;
+    padding:5px 4px;
     cursor:pointer;
     transition:background .12s ease, color .12s ease;
+    width:100%;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
   }
   .controls button:hover,
   .controls button:focus-visible{
@@ -165,16 +171,11 @@
     color:#07090a;
   }
 
-  #btnPause{
-  min-width: 64px;
-  text-align: center;
-  }
-
   @media (max-width:560px){
     .border-line{ font-size:10px; }
     .status-row1{ font-size:11px; }
     .status-row2{ display:none; } /* buttons carry the load on small screens */
-    .controls button{ font-size:12px; padding:7px 10px; }
+    .controls button{ font-size:11px; padding:6px 3px; }
     #btnPause{ min-width: 74px; }
   }
 </style>
